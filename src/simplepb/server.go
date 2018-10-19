@@ -167,6 +167,13 @@ func (srv *PBServer) Start(command interface{}) (
 	} else if GetPrimary(srv.currentView, len(srv.peers)) != srv.me {
 		return -1, srv.currentView, false
 	}
+	//append in log
+
+	//send prepare to all machines so that they can replicate
+
+	//recieve everyones output and check if it is in majority
+	    //commitIndex++
+		//AND SEND THIS COMMIT INDES IN NEXT PREPARE
 
 	// Your code here
 
@@ -196,6 +203,12 @@ func (srv *PBServer) sendPrepare(server int, args *PrepareArgs, reply *PrepareRe
 // Prepare is the RPC handler for the Prepare RPC
 func (srv *PBServer) Prepare(args *PrepareArgs, reply *PrepareReply) {
 	// Your code here
+
+	//check current view and and args ka view and check index
+	    //if true then put message entry in logs and send success = ok
+	    //else send success=false
+	 //else perform recovery (current view is less as compared to args ka view)
+	    //list mein rakh koi, fir time aane pe apply kar
 }
 
 // Recovery is the RPC handler for the Recovery RPC
