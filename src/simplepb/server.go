@@ -7,9 +7,8 @@ package simplepb
 //
 
 import (
-	"sync"
-
 	"labrpc"
+	"sync"
 )
 
 // the 3 possible server status
@@ -172,8 +171,8 @@ func (srv *PBServer) Start(command interface{}) (
 	//send prepare to all machines so that they can replicate
 
 	//recieve everyones output and check if it is in majority
-	    //commitIndex++
-		//AND SEND THIS COMMIT INDES IN NEXT PREPARE
+	//commitIndex++
+	//AND SEND THIS COMMIT INDES IN NEXT PREPARE
 
 	// Your code here
 
@@ -203,12 +202,19 @@ func (srv *PBServer) sendPrepare(server int, args *PrepareArgs, reply *PrepareRe
 // Prepare is the RPC handler for the Prepare RPC
 func (srv *PBServer) Prepare(args *PrepareArgs, reply *PrepareReply) {
 	// Your code here
+	if srv.currentView == args.View && len(srv.log) < args.Index-1 {
+		srv.log = append(srv.log, args.Entry)
+		reply.Success = true
+		reply.View = srv.currentView
+	} else {
+		//Recovery
+	}
 
 	//check current view and and args ka view and check index
-	    //if true then put message entry in logs and send success = ok
-	    //else send success=false
-	 //else perform recovery (current view is less as compared to args ka view)
-	    //list mein rakh koi, fir time aane pe apply kar
+	//if true then put message entry in logs and send success = ok
+	//else send success=false
+	//else perform recovery (current view is less as compared to args ka view)
+	//list mein rakh koi, fir time aane pe apply kar
 }
 
 // Recovery is the RPC handler for the Recovery RPC
