@@ -7,6 +7,7 @@ package simplepb
 //
 
 import (
+	"container/list"
 	"labrpc"
 	"sync"
 )
@@ -167,16 +168,33 @@ func (srv *PBServer) Start(command interface{}) (
 		return -1, srv.currentView, false
 	}
 	//append in log
-
+	srv.log = append(srv.log, command)
 	//send prepare to all machines so that they can replicate
+	listOfReplies := list.New()
+	for i := range srv.peers {
+		p:=PrepareArgs{srv.currentView,srv.commitIndex,len(srv.log),srv.log}
+		r:=PrepareReply{srv.currentView,true}
+		go processSendPrepareReplies(srv,i,&p,&r,listOfReplies)
+	}
 
 	//recieve everyones output and check if it is in majority
-	//commitIndex++
+
+	for ;listOfReplies.Len()!=(len(srv.peers)-1)/2; {
+		//commitIndex++
+		srv.commitIndex = srv.commitIndex+1;
+	}
+
 	//AND SEND THIS COMMIT INDES IN NEXT PREPARE
 
 	// Your code here
 
 	return index, view, ok
+}
+func processSendPrepareReplies(srv *PBServer,i int,p *PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
+	reply := srv.sendPrepare(i,p,r)
+	if reply {
+		listOfReplies.PushBack(1);
+	}
 }
 
 // exmple code to send an AppendEntries RPC to a server.
