@@ -8,6 +8,7 @@ package simplepb
 
 import (
 	"container/list"
+	"fmt"
 	"labrpc"
 	"sync"
 )
@@ -81,6 +82,17 @@ type StartViewArgs struct {
 type StartViewReply struct {
 }
 
+/*Start : Args and Replies for Commit rpc call*/
+type CommitArgs struct{
+	View int
+	Commit int
+}
+type CommitReply struct{
+	Success bool
+
+}
+
+/*End : Args and Replies for Commit rpc call*/
 // GetPrimary is an auxilary function that returns the server index of the
 // primary server given the view number (and the total number of replica servers)
 func GetPrimary(view int, nservers int) int {
@@ -95,6 +107,7 @@ func (srv *PBServer) IsCommitted(index int) (committed bool) {
 	if srv.commitIndex >= index {
 		return true
 	}
+	fmt.Println("isCommitted",index)
 	return false
 }
 
@@ -169,31 +182,44 @@ func (srv *PBServer) Start(command interface{}) (
 	}
 	//append in log
 	srv.log = append(srv.log, command)
+	fmt.Println("srv.log ",srv.log)
+	index = len(srv.log)-1
+	ok=true
 	//send prepare to all machines so that they can replicate
 	listOfReplies := list.New()
 	for i := range srv.peers {
-		p:=PrepareArgs{srv.currentView,srv.commitIndex,len(srv.log),srv.log}
+		p:=PrepareArgs{srv.currentView,srv.commitIndex,index,command}
 		r:=PrepareReply{srv.currentView,true}
-		go processSendPrepareReplies(srv,i,&p,&r,listOfReplies)
+		go processSendPrepareReplies(srv,i,p,&r,listOfReplies)
 	}
 
 	//recieve everyones output and check if it is in majority
-
+/*
 	for ;listOfReplies.Len()!=(len(srv.peers)-1)/2; {
 		//commitIndex++
 		srv.commitIndex = srv.commitIndex+1;
-	}
+	}*/
 
 	//AND SEND THIS COMMIT INDES IN NEXT PREPARE
 
 	// Your code here
 
-	return index, view, ok
+	return index, srv.currentView, ok
 }
-func processSendPrepareReplies(srv *PBServer,i int,p *PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
+func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
 	reply := srv.sendPrepare(i,p,r)
+	fmt.Println("reply aaya ",reply,r)
 	if reply {
 		listOfReplies.PushBack(1);
+		if listOfReplies.Len()==(len(srv.peers)) {
+			srv.commitIndex = srv.commitIndex+1;
+			fmt.Println("Commit Index incremented",srv.commitIndex)
+			for i := range srv.peers {
+				args:=CommitArgs{srv.currentView,srv.commitIndex,}
+				reply:=CommitReply{false}
+				srv.peers[i].Call("PBServer.Commit", args, &reply)
+			}
+		}
 	}
 }
 
@@ -212,20 +238,26 @@ func processSendPrepareReplies(srv *PBServer,i int,p *PrepareArgs,r *PrepareRepl
 // Call() returns false. Thus Call() may not return for a while.
 // A false return can be caused by a dead server, a live server that
 // can't be reached, a lost request, or a lost reply.
-func (srv *PBServer) sendPrepare(server int, args *PrepareArgs, reply *PrepareReply) bool {
+func (srv *PBServer) sendPrepare(server int, args PrepareArgs, reply *PrepareReply) bool {
 	ok := srv.peers[server].Call("PBServer.Prepare", args, reply)
 	return ok
 }
 
 // Prepare is the RPC handler for the Prepare RPC
-func (srv *PBServer) Prepare(args *PrepareArgs, reply *PrepareReply) {
+func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 	// Your code here
-	if srv.currentView == args.View && len(srv.log) < args.Index-1 {
-		srv.log = append(srv.log, args.Entry)
-		reply.Success = true
-		reply.View = srv.currentView
-	} else {
-		//Recovery
+	fmt.Println(srv.currentView == args.View)
+	fmt.Println(args)
+	if GetPrimary(srv.currentView, len(srv.peers)) != srv.me {
+		if srv.currentView == args.View && srv.commitIndex == args.Index-1 {
+			srv.commitIndex = args.PrimaryCommit
+			fmt.Println("prepare")
+			srv.log = append(srv.log, args.Entry)
+			reply.Success = true
+			reply.View = srv.currentView
+		} else {
+			//Recovery
+		}
 	}
 
 	//check current view and and args ka view and check index
@@ -324,4 +356,9 @@ func (srv *PBServer) ViewChange(args *ViewChangeArgs, reply *ViewChangeReply) {
 // StartView is the RPC handler to process StartView RPC.
 func (srv *PBServer) StartView(args *StartViewArgs, reply *StartViewReply) {
 	// Your code here
+}
+
+func (srv *PBServer) Commit(args CommitArgs,reply *CommitReply) {
+	srv.commitIndex = args.Commit
+	reply.Success = true
 }
