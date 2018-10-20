@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"labrpc"
 	"sync"
+	"time"
 )
 
 // the 3 possible server status
@@ -33,6 +34,7 @@ type PBServer struct {
 	commitIndex int           // all log entries <= commitIndex are considered to have been committed.
 
 	// ... other state that you might need ...
+	CommandList	[]PrepareArgs
 }
 
 // Prepare defines the arguments for the Prepare RPC
@@ -183,45 +185,39 @@ func (srv *PBServer) Start(command interface{}) (
 	//append in log
 	srv.log = append(srv.log, command)
 	fmt.Println("srv.log ",srv.log)
-	index = len(srv.log)-1
-	ok=true
+	index = len(srv.log)
 	//send prepare to all machines so that they can replicate
 	listOfReplies := list.New()
 	for i := range srv.peers {
 		p:=PrepareArgs{srv.currentView,srv.commitIndex,index,command}
 		r:=PrepareReply{srv.currentView,true}
+		fmt.Println("Executing go routine for : ",p,i)
 		go processSendPrepareReplies(srv,i,p,&r,listOfReplies)
 	}
-
-	//recieve everyones output and check if it is in majority
-/*
-	for ;listOfReplies.Len()!=(len(srv.peers)-1)/2; {
-		//commitIndex++
-		srv.commitIndex = srv.commitIndex+1;
-	}*/
-
-	//AND SEND THIS COMMIT INDES IN NEXT PREPARE
-
-	// Your code here
-
-	return index, srv.currentView, ok
+	return index-1, srv.currentView, true
 }
 func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
+	fmt.Println("Sending Prepare Request to : ",i," ---> ",p)
 	reply := srv.sendPrepare(i,p,r)
-	fmt.Println("reply aaya ",reply,r)
+	fmt.Println("Received reply : ",reply,r,p,i)
 	if reply {
 		listOfReplies.PushBack(1);
-		if listOfReplies.Len()==(len(srv.peers)) {
-			srv.commitIndex = srv.commitIndex+1;
-			fmt.Println("Commit Index incremented",srv.commitIndex)
-			for i := range srv.peers {
+		if listOfReplies.Len()==((len(srv.peers)+1)/2) { //2f-1 = 3 therefore f = (3+1)/2
+		srv.commitIndex = srv.commitIndex+1;fmt.Println("Commit Index incremented",srv.commitIndex,srv.log,p.Index)
+		for i := range srv.peers {
 				args:=CommitArgs{srv.currentView,srv.commitIndex,}
 				reply:=CommitReply{false}
 				srv.peers[i].Call("PBServer.Commit", args, &reply)
 			}
+		}else {
+			fmt.Println("Replicated in ",listOfReplies.Len()," machines")
 		}
+
+		}else {
+			fmt.Println("Retrying : ",p,r)
+		}
+
 	}
-}
 
 // exmple code to send an AppendEntries RPC to a server.
 // server is the index of the target server in srv.peers[].
@@ -246,29 +242,33 @@ func (srv *PBServer) sendPrepare(server int, args PrepareArgs, reply *PrepareRep
 // Prepare is the RPC handler for the Prepare RPC
 func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 	// Your code here
-	fmt.Println(srv.currentView == args.View)
-	fmt.Println(args)
-	if GetPrimary(srv.currentView, len(srv.peers)) != srv.me {
-		if srv.currentView == args.View && srv.commitIndex == args.Index-1 {
-			srv.commitIndex = args.PrimaryCommit
-			fmt.Println("prepare")
-			srv.log = append(srv.log, args.Entry)
+	fmt.Println("<in prepare>",args,srv.me)
+	if srv.currentView == args.View {
+		//if called to primary then no need to append entry just send true
+		if GetPrimary(srv.currentView, len(srv.peers)) == srv.me{
 			reply.Success = true
 			reply.View = srv.currentView
-		} else {
-			//Recovery
+			return
+		}else{
+			//forever loop till we can execute the command at the required index
+			for  {
+				if args.Index == len(srv.log)+1 {
+					fmt.Println("")
+					srv.commitIndex = args.Index
+					srv.log = append(srv.log, args.Entry)
+					reply.Success = true
+					reply.View = srv.currentView
+					return
+				}
+				//inorder to give another process machine time
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
 	}
-
-	//check current view and and args ka view and check index
-	//if true then put message entry in logs and send success = ok
-	//else send success=false
-	//else perform recovery (current view is less as compared to args ka view)
-	//list mein rakh koi, fir time aane pe apply kar
 }
 
 // Recovery is the RPC handler for the Recovery RPC
-func (srv *PBServer) Recovery(args *RecoveryArgs, reply *RecoveryReply) {
+func (srv *PBServer) Recovery(args RecoveryArgs, reply *RecoveryReply) {
 	// Your code here
 }
 
