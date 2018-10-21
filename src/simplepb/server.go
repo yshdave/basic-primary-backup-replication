@@ -186,16 +186,22 @@ func (srv *PBServer) Start(command interface{}) (
 	srv.log = append(srv.log, command)
 	fmt.Println("srv.log ",srv.log)
 	index = len(srv.log)
+
 	//send prepare to all machines so that they can replicate
 	listOfReplies := list.New()
-	for i := range srv.peers {
-		p:=PrepareArgs{srv.currentView,srv.commitIndex,index,command}
-		r:=PrepareReply{srv.currentView,true}
-		fmt.Println("Executing go routine for : ",p,i)
-		go processSendPrepareReplies(srv,i,p,&r,listOfReplies)
-	}
-	return index-1, srv.currentView, true
+	go replicateCommand(srv, index, command, listOfReplies)
+	return index - 1, srv.currentView, true
 }
+
+func replicateCommand(srv *PBServer, index int, command interface{}, listOfReplies *list.List) {
+	for i := range srv.peers {
+		p := PrepareArgs{srv.currentView, srv.commitIndex, index, command}
+		r := PrepareReply{srv.currentView, true}
+		fmt.Println("Executing go routine for : ", p, i)
+		go processSendPrepareReplies(srv, i, p, &r, listOfReplies)
+	}
+}
+
 func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
 	fmt.Println("Sending Prepare Request to : ",i," ---> ",p)
 	reply := srv.sendPrepare(i,p,r)
@@ -203,8 +209,9 @@ func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply
 	if reply {
 		listOfReplies.PushBack(1);
 		if listOfReplies.Len()==((len(srv.peers)+1)/2) { //2f-1 = 3 therefore f = (3+1)/2
-		srv.commitIndex = srv.commitIndex+1;fmt.Println("Commit Index incremented",srv.commitIndex,srv.log,p.Index)
-		for i := range srv.peers {
+			srv.commitIndex = srv.commitIndex+1;
+			fmt.Println("Commit Index incremented",srv.commitIndex,srv.log,p.Index)
+			for i := range srv.peers {
 				args:=CommitArgs{srv.currentView,srv.commitIndex,}
 				reply:=CommitReply{false}
 				srv.peers[i].Call("PBServer.Commit", args, &reply)
@@ -213,11 +220,11 @@ func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply
 			fmt.Println("Replicated in ",listOfReplies.Len()," machines")
 		}
 
-		}else {
-			fmt.Println("Retrying : ",p,r)
-		}
+	}else {
+		fmt.Println("Retrying after sleeping for 10 ms: ",p,r)
 
 	}
+}
 
 // exmple code to send an AppendEntries RPC to a server.
 // server is the index of the target server in srv.peers[].
@@ -243,6 +250,23 @@ func (srv *PBServer) sendPrepare(server int, args PrepareArgs, reply *PrepareRep
 func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 	// Your code here
 	fmt.Println("<in prepare>",args,srv.me)
+
+	//If replica's commit index is behind Primary's commit Index
+	//That means replica was down/couldn't process previous commit
+	//due to any possible reason
+	//so perform recovery
+	if srv.commitIndex < args.PrimaryCommit {
+		recoveryArgs := RecoveryArgs{args.View, srv.me}
+		recoveryReply := RecoveryReply{args.View, srv.log, args.PrimaryCommit, true}
+		primaryServer := GetPrimary(srv.currentView, len(srv.peers))
+		ok := srv.DoRecovery(primaryServer, recoveryArgs, &recoveryReply)
+		if ok{
+			fmt.Println("Recovery Successful. Now I'll perform current command")
+		} else {
+			fmt.Println("Couldn't recover. Will try recovery on next Prepare call")
+			return
+		}
+	}
 	if srv.currentView == args.View {
 		//if called to primary then no need to append entry just send true
 		if GetPrimary(srv.currentView, len(srv.peers)) == srv.me{
@@ -264,12 +288,37 @@ func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
+	} else {
+		fmt.Println("Got a request for view less than current Index")
 	}
 }
 
+
+func (srv *PBServer) DoRecovery(server int, args RecoveryArgs, reply *RecoveryReply) bool {
+	ok := srv.peers[server].Call("PBServer.Recovery", args, reply)
+	if reply.Success {
+		srv.commitIndex = reply.PrimaryCommit
+		srv.log = reply.Entries
+		srv.currentView = reply.View
+	} else {
+		ok = false
+	}
+	return ok
+}
 // Recovery is the RPC handler for the Recovery RPC
 func (srv *PBServer) Recovery(args RecoveryArgs, reply *RecoveryReply) {
-	// Your code here
+	//If primary receives a recovery call,
+	//Append its info in reply & set success = true
+	//Else set success = false
+	if GetPrimary(srv.currentView, len(srv.peers)) == srv.me {
+		reply.View = srv.currentView
+		reply.Entries = srv.log
+		reply.PrimaryCommit = srv.commitIndex
+		reply.Success = true
+	} else {
+		reply.Success = false
+	}
+	return
 }
 
 // Some external oracle prompts the primary of the newView to
