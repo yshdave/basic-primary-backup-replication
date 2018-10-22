@@ -196,7 +196,7 @@ func (srv *PBServer) Start(command interface{}) (
 func replicateCommand(srv *PBServer, index int, command interface{}, listOfReplies *list.List) {
 	for i := range srv.peers {
 		p := PrepareArgs{srv.currentView, srv.commitIndex, index, command}
-		r := PrepareReply{srv.currentView, true}
+		r := PrepareReply{srv.currentView, false}
 		fmt.Println("Executing go routine for : ", p, i)
 		go processSendPrepareReplies(srv, i, p, &r, listOfReplies)
 	}
@@ -204,25 +204,22 @@ func replicateCommand(srv *PBServer, index int, command interface{}, listOfRepli
 
 func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
 	fmt.Println("Sending Prepare Request to : ",i," ---> ",p)
-	reply := srv.sendPrepare(i,p,r)
-	fmt.Println("Received reply : ",reply,r,p,i)
-	if reply {
-		listOfReplies.PushBack(1);
-		if listOfReplies.Len()==((len(srv.peers)+1)/2) { //2f-1 = 3 therefore f = (3+1)/2
-			srv.commitIndex = srv.commitIndex+1;
-			fmt.Println("Commit Index incremented",srv.commitIndex,srv.log,p.Index)
-			for i := range srv.peers {
-				args:=CommitArgs{srv.currentView,srv.commitIndex,}
-				reply:=CommitReply{false}
-				srv.peers[i].Call("PBServer.Commit", args, &reply)
-			}
-		}else {
-			fmt.Println("Replicated in ",listOfReplies.Len()," machines")
+	srv.sendPrepare(i,p,r)
+	fmt.Println("Received reply : ",r.Success,r,p,i)
+	if r.Success {
+		listOfReplies.PushBack(1)
+	}
+
+	if listOfReplies.Len()==((len(srv.peers)+1)/2) { //2f-1 = 3 therefore f = (3+1)/2
+		srv.commitIndex = srv.commitIndex+1 //Incrementing Primary's Commit Index
+		fmt.Println("Commit Index incremented",srv.commitIndex,srv.log,p.Index)
+		for i := range srv.peers {
+			args:=CommitArgs{srv.currentView,srv.commitIndex}
+			reply:=CommitReply{false}
+			srv.peers[i].Call("PBServer.Commit", args, &reply)
 		}
-
 	}else {
-		fmt.Println("Retrying after sleeping for 10 ms: ",p,r)
-
+		fmt.Println("Replicated in ",listOfReplies.Len()," machines")
 	}
 }
 
@@ -261,7 +258,7 @@ func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 		primaryServer := GetPrimary(srv.currentView, len(srv.peers))
 		ok := srv.DoRecovery(primaryServer, recoveryArgs, &recoveryReply)
 		if ok{
-			fmt.Println("Recovery Successful. Now I'll perform current command")
+			fmt.Println("Recovery Successful for node: . Now I'll perform current command : ", srv.me, args)
 		} else {
 			fmt.Println("Couldn't recover. Will try recovery on next Prepare call")
 			return
