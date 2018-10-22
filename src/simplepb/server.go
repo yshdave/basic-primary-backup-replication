@@ -175,6 +175,7 @@ func (srv *PBServer) Start(command interface{}) (
 	index int, view int, ok bool) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
+	fmt.Println("Current Primary = ", srv.me)
 	// do not process command if status is not NORMAL
 	// and if i am not the primary in the current view
 	if srv.status != NORMAL {
@@ -182,6 +183,7 @@ func (srv *PBServer) Start(command interface{}) (
 	} else if GetPrimary(srv.currentView, len(srv.peers)) != srv.me {
 		return -1, srv.currentView, false
 	}
+
 	//append in log
 	srv.log = append(srv.log, command)
 	fmt.Println("srv.log ",srv.log)
@@ -203,14 +205,25 @@ func replicateCommand(srv *PBServer, index int, command interface{}, listOfRepli
 }
 
 func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
-	fmt.Println("Sending Prepare Request to : ",i," ---> ",p)
-	srv.sendPrepare(i,p,r)
-	fmt.Println("Received reply : ",r.Success,r,p,i)
-	if r.Success {
-		listOfReplies.PushBack(1)
-	}
+	shouldCommit := true
+	for {
+		fmt.Println("Sending Prepare Request to : ",i," ---> ",p)
+		reply := srv.sendPrepare(i,p,r)
+		fmt.Println("Received reply : ",reply,r,p,i)
+		shouldBreak := false
+		if reply {
+			listOfReplies.PushBack(1)
+			shouldBreak = true
+		}
 
-	if listOfReplies.Len()==((len(srv.peers)+1)/2) { //2f-1 = 3 therefore f = (3+1)/2
+		if shouldBreak {
+			break
+		} else {
+			fmt.Println("Will Retry after 10 ms to get a reply from server : for cmd : ", i, p)
+			time.Sleep(10*time.Millisecond)
+		}
+	}
+	if shouldCommit && listOfReplies.Len()==((len(srv.peers)+1)/2) { //2f-1 = 3 therefore f = (3+1)/2
 		srv.commitIndex = srv.commitIndex+1 //Incrementing Primary's Commit Index
 		fmt.Println("Commit Index incremented",srv.commitIndex,srv.log,p.Index)
 		for i := range srv.peers {
@@ -218,8 +231,7 @@ func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply
 			reply:=CommitReply{false}
 			srv.peers[i].Call("PBServer.Commit", args, &reply)
 		}
-	}else {
-		fmt.Println("Replicated in ",listOfReplies.Len()," machines")
+		shouldCommit = false
 	}
 }
 
