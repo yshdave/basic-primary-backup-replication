@@ -34,7 +34,7 @@ type PBServer struct {
 	commitIndex int           // all log entries <= commitIndex are considered to have been committed.
 
 	// ... other state that you might need ...
-	CommandList	[]PrepareArgs
+	CommandList []PrepareArgs
 }
 
 // Prepare defines the arguments for the Prepare RPC
@@ -85,13 +85,12 @@ type StartViewReply struct {
 }
 
 /*Start : Args and Replies for Commit rpc call*/
-type CommitArgs struct{
-	View int
+type CommitArgs struct {
+	View   int
 	Commit int
 }
-type CommitReply struct{
+type CommitReply struct {
 	Success bool
-
 }
 
 /*End : Args and Replies for Commit rpc call*/
@@ -109,7 +108,7 @@ func (srv *PBServer) IsCommitted(index int) (committed bool) {
 	if srv.commitIndex >= index {
 		return true
 	}
-	fmt.Println("isCommitted",index)
+	fmt.Println("isCommitted", index)
 	return false
 }
 
@@ -175,7 +174,6 @@ func (srv *PBServer) Start(command interface{}) (
 	index int, view int, ok bool) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	fmt.Println("Current Primary = ", srv.me)
 	// do not process command if status is not NORMAL
 	// and if i am not the primary in the current view
 	if srv.status != NORMAL {
@@ -183,56 +181,71 @@ func (srv *PBServer) Start(command interface{}) (
 	} else if GetPrimary(srv.currentView, len(srv.peers)) != srv.me {
 		return -1, srv.currentView, false
 	}
-
 	//append in log
 	srv.log = append(srv.log, command)
-	fmt.Println("srv.log ",srv.log)
+	fmt.Println("srv.log ", srv.log)
 	index = len(srv.log)
 
 	//send prepare to all machines so that they can replicate
 	listOfReplies := list.New()
-	go replicateCommand(srv, index, command, listOfReplies)
+	var mutex = sync.Mutex{}
+	go replicateCommand(srv, index, command, listOfReplies, &mutex)
 	return index - 1, srv.currentView, true
 }
 
-func replicateCommand(srv *PBServer, index int, command interface{}, listOfReplies *list.List) {
+func replicateCommand(srv *PBServer, index int, command interface{}, listOfReplies *list.List, mutex *sync.Mutex) {
 	for i := range srv.peers {
 		p := PrepareArgs{srv.currentView, srv.commitIndex, index, command}
 		r := PrepareReply{srv.currentView, false}
 		fmt.Println("Executing go routine for : ", p, i)
-		go processSendPrepareReplies(srv, i, p, &r, listOfReplies)
+		go processSendPrepareReplies(srv, i, p, &r, listOfReplies, mutex)
 	}
 }
 
-func processSendPrepareReplies(srv *PBServer,i int,p PrepareArgs,r *PrepareReply, listOfReplies *list.List) {
-	shouldCommit := true
+func processSendPrepareReplies(srv *PBServer, i int, p PrepareArgs, r *PrepareReply, listOfReplies *list.List, mutex *sync.Mutex) {
 	for {
-		fmt.Println("Sending Prepare Request to : ",i," ---> ",p)
-		reply := srv.sendPrepare(i,p,r)
-		fmt.Println("Received reply : ",reply,r,p,i)
+		fmt.Println("Sending Prepare Request to : ", i, " ---> ", p)
+		reply := srv.sendPrepare(i, p, r)
+		fmt.Println("Received reply : ", reply, r, p, i)
 		shouldBreak := false
 		if reply {
+			mutex.Lock()
 			listOfReplies.PushBack(1)
 			shouldBreak = true
+			break
 		}
-
 		if shouldBreak {
 			break
 		} else {
 			fmt.Println("Will Retry after 10 ms to get a reply from server : for cmd : ", i, p)
-			time.Sleep(10*time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	if shouldCommit && listOfReplies.Len()==((len(srv.peers)+1)/2) { //2f-1 = 3 therefore f = (3+1)/2
-		srv.commitIndex = srv.commitIndex+1 //Incrementing Primary's Commit Index
-		fmt.Println("Commit Index incremented",srv.commitIndex,srv.log,p.Index)
-		for i := range srv.peers {
-			args:=CommitArgs{srv.currentView,srv.commitIndex}
-			reply:=CommitReply{false}
-			srv.peers[i].Call("PBServer.Commit", args, &reply)
+
+	if listOfReplies.Len() == ((len(srv.peers) + 1) / 2) { //2f-1 = 3 therefore f = (3+1)/2
+		mutex.Unlock()
+		for {
+			srv.mu.Lock()
+			var toBeComitted = srv.commitIndex + 1
+			if p.Index-toBeComitted == 1 {
+				srv.commitIndex = srv.commitIndex + 1
+				fmt.Println("Commit Index incremented", srv.commitIndex, srv.log, p.Index)
+				srv.mu.Unlock()
+				for i := range srv.peers {
+					args := CommitArgs{srv.currentView, srv.commitIndex}
+					reply := CommitReply{false}
+					srv.peers[i].Call("PBServer.Commit", args, &reply)
+				}
+			} else {
+				srv.mu.Unlock()
+				fmt.Println("Will wait for 10ms to allow earlier command to get commitied : ", i, p)
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
-		shouldCommit = false
+
+		return
 	}
+	mutex.Unlock()
 }
 
 // exmple code to send an AppendEntries RPC to a server.
@@ -258,7 +271,7 @@ func (srv *PBServer) sendPrepare(server int, args PrepareArgs, reply *PrepareRep
 // Prepare is the RPC handler for the Prepare RPC
 func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 	// Your code here
-	fmt.Println("<in prepare>",args,srv.me)
+	fmt.Println("<in prepare>", args, srv.me)
 
 	//If replica's commit index is behind Primary's commit Index
 	//That means replica was down/couldn't process previous commit
@@ -269,7 +282,7 @@ func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 		recoveryReply := RecoveryReply{args.View, srv.log, args.PrimaryCommit, true}
 		primaryServer := GetPrimary(srv.currentView, len(srv.peers))
 		ok := srv.DoRecovery(primaryServer, recoveryArgs, &recoveryReply)
-		if ok{
+		if ok {
 			fmt.Println("Recovery Successful for node: . Now I'll perform current command : ", srv.me, args)
 		} else {
 			fmt.Println("Couldn't recover. Will try recovery on next Prepare call")
@@ -278,13 +291,13 @@ func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 	}
 	if srv.currentView == args.View {
 		//if called to primary then no need to append entry just send true
-		if GetPrimary(srv.currentView, len(srv.peers)) == srv.me{
+		if GetPrimary(srv.currentView, len(srv.peers)) == srv.me {
 			reply.Success = true
 			reply.View = srv.currentView
 			return
-		}else{
+		} else {
 			//forever loop till we can execute the command at the required index
-			for  {
+			for {
 				if args.Index == len(srv.log)+1 {
 					fmt.Println("")
 					srv.commitIndex = args.Index
@@ -302,7 +315,6 @@ func (srv *PBServer) Prepare(args PrepareArgs, reply *PrepareReply) {
 	}
 }
 
-
 func (srv *PBServer) DoRecovery(server int, args RecoveryArgs, reply *RecoveryReply) bool {
 	ok := srv.peers[server].Call("PBServer.Recovery", args, reply)
 	if reply.Success {
@@ -314,6 +326,7 @@ func (srv *PBServer) DoRecovery(server int, args RecoveryArgs, reply *RecoveryRe
 	}
 	return ok
 }
+
 // Recovery is the RPC handler for the Recovery RPC
 func (srv *PBServer) Recovery(args RecoveryArgs, reply *RecoveryReply) {
 	//If primary receives a recovery call,
@@ -416,7 +429,7 @@ func (srv *PBServer) StartView(args *StartViewArgs, reply *StartViewReply) {
 	// Your code here
 }
 
-func (srv *PBServer) Commit(args CommitArgs,reply *CommitReply) {
+func (srv *PBServer) Commit(args CommitArgs, reply *CommitReply) {
 	srv.commitIndex = args.Commit
 	reply.Success = true
 }
